@@ -15,7 +15,7 @@ This project is a **serverless API Orchestrator** designed to aggregate, normali
 
 ## Tech Stack
 
-- **Language:** Python 3.9
+- **Language:** Python
 - **Cloud Provider:** AWS (Lambda, IAM)
 - **DevOps:** GitHub Actions
 - **Libraries:** `requests`, `concurrent.futures`, `json`
