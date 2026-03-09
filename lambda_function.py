@@ -176,6 +176,11 @@ def lambda_handler(event, context):
 
     return {
         "statusCode": 200,
-        "headers": {"Content-Type": "application/json"},
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*", # Required for CORS
+            "Access-Control-Allow-Methods": "GET, OPTIONS", # Allows the browser to fetch
+            "Access-Control-Allow-Headers": "Content-Type, User-Agent" # Allows the headers you are sending
+        },
         "body": json.dumps(all_events)
     }
