@@ -74,7 +74,7 @@ async def get_linked_events():
             local_events.append({
                 'title': (result.get('name') or {}).get('en') or (result.get('name') or {}).get('fi'),
                 'description': (result.get('description') or {}).get('en') or (result.get('description') or {}).get('fi'),
-                'location': coords[::-1],
+                'location': (coords[0][::-1] if isinstance(coords[0], list) else coords[::-1]) if coords else None,
                 'venue': (loc_json.get('name') or {}).get('en') or (loc_json.get('name') or {}).get('fi'),
                 'date': date_val,
                 'time': time_val,
@@ -100,11 +100,17 @@ def myhelsinki():
         for result in data.get('results') or []:
             locations = result.get('locations') or []
             tags_data = result.get('tags') or []
+            
+            first_loc_obj = locations[0] if locations and isinstance(locations[0], dict) else {}
+            
+            loc_coords = first_loc_obj.get('location') 
+            venue_name = first_loc_obj.get('title')
+            
             results_list.append({
                 'title': result.get('title'),
                 'description': result.get('excerpt'),
-                'location': [loc.get('location') for loc in locations if isinstance(loc, dict)],
-                'venue': [loc.get('title') for loc in locations if isinstance(loc, dict)],
+                'location': [loc_coords] if loc_coords else None,
+                'venue': [venue_name] if venue_name else None,
                 'date': result.get('start_date'),
                 'time': result.get('start_time_of_day'),
                 'price': None,
