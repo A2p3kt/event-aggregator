@@ -2,12 +2,73 @@ import json
 import asyncio
 import aiohttp
 import math
-from datetime import date, timedelta
+import boto3
+from decimal import Decimal
+from datetime import date, datetime, timedelta, timezone
 
 # Global configuration
 GAP = timedelta(days=100)
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 MAX_CONCURRENCY = 10
+TABLE_NAME = "HelsinkiEvents"
+
+
+def _calculate_ttl(date_str, time_str=None):
+    """Compute TTL as event datetime + 24h (unix timestamp)."""
+    try:
+        if not date_str:
+            base_dt = datetime.now(timezone.utc)
+        else:
+            clean_date = str(date_str).strip()
+            clean_time = (time_str or "00:00:00").strip()
+
+            if "T" in clean_date:
+                dt_raw = clean_date.replace("Z", "+00:00")
+            else:
+                clean_time = clean_time.replace("Z", "")
+                dt_raw = f"{clean_date}T{clean_time}"
+
+            base_dt = datetime.fromisoformat(dt_raw)
+            if base_dt.tzinfo is None:
+                base_dt = base_dt.replace(tzinfo=timezone.utc)
+            else:
+                base_dt = base_dt.astimezone(timezone.utc)
+
+        return int((base_dt + timedelta(hours=24)).timestamp())
+    except Exception:
+        return int((datetime.now(timezone.utc) + timedelta(hours=24)).timestamp())
+
+
+def _to_dynamodb_types(value):
+    """Convert Python values recursively into DynamoDB-safe types."""
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, list):
+        return [_to_dynamodb_types(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _to_dynamodb_types(v) for k, v in value.items()}
+    return value
+
+
+def _chunk(items, size=25):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def upsert_events_to_dynamodb(events):
+    """Upsert events into DynamoDB in 25-item batches."""
+    table = boto3.resource("dynamodb").Table(TABLE_NAME)
+    processed = 0
+
+    for batch in _chunk(events, 25):
+        with table.batch_writer(overwrite_by_pkeys=["id", "start_time"]) as writer:
+            for item in batch:
+                if not item.get("id") or not item.get("start_time"):
+                    continue
+                writer.put_item(Item=_to_dynamodb_types(item))
+                processed += 1
+
+    return processed
 
 
 async def fetch_json(session, sem, url):
@@ -72,6 +133,7 @@ async def get_linked_events(session, sem):
     for result in valid_results:
         start_time_str = result.get('start_time') or ""
         date_val, time_val = (start_time_str.split('T') if 'T' in start_time_str else (start_time_str, None))
+        linked_id = result.get('id')
 
         loc_url = (result.get('location') or {}).get('@id')
         loc_json = details_map.get(loc_url, {})
@@ -85,6 +147,8 @@ async def get_linked_events(session, sem):
                 tags.append(name)
 
         local_events.append({
+            'id': f"linked-{linked_id}" if linked_id else None,
+            'start_time': start_time_str,
             'title': (result.get('name') or {}).get('en') or (result.get('name') or {}).get('fi'),
             'description': (result.get('description') or {}).get('en') or (result.get('description') or {}).get('fi'),
             'location': (coords[0][::-1] if isinstance(coords[0], list) else coords[::-1]) if coords else None,
@@ -96,7 +160,8 @@ async def get_linked_events(session, sem):
             'tags': tags,
             'signup_link': (result.get('info_url') or {}).get('en') or (result.get('info_url') or {}).get('fi'),
             'created_by': 'LinkedEvents',
-            'created_at': str(date.today())
+            'created_at': str(date.today()),
+            'ttl': _calculate_ttl(date_val, time_val)
         })
 
     return local_events
@@ -129,24 +194,32 @@ async def myhelsinki(session, sem):
         for result in all_results:
             locations = result.get('locations') or []
             tags_data = result.get('tags') or []
+            item_id = result.get('id') or result.get('ID')
 
             first_loc_obj = locations[0] if locations and isinstance(locations[0], dict) else {}
             loc_coords = first_loc_obj.get('location')
             venue_name = first_loc_obj.get('title')
 
+            date_val = result.get('start_date')
+            time_val = result.get('start_time_of_day')
+            start_time_str = f"{date_val}T{time_val}" if date_val and time_val else date_val
+
             results_list.append({
+                'id': f"myhel-{item_id}" if item_id else None,
+                'start_time': start_time_str,
                 'title': result.get('title'),
                 'description': result.get('excerpt'),
                 'location': loc_coords if loc_coords else None,
                 'venue': venue_name if venue_name else None,
-                'date': result.get('start_date'),
-                'time': result.get('start_time_of_day'),
+                'date': date_val,
+                'time': time_val,
                 'price': None,
                 'img_url': result.get('image_url'),
                 'tags': [tag.get('name') for tag in tags_data if isinstance(tag, dict)],
                 'signup_link': result.get('external_url'),
                 'created_by': 'MyHelsinki',
-                'created_at': str(date.today())
+                'created_at': str(date.today()),
+                'ttl': _calculate_ttl(date_val, time_val)
             })
     except Exception as e:
         print(f"MyHelsinki error: {e}")
@@ -211,6 +284,8 @@ async def luma(session, sem):
             signup_link = f"https://luma.com/helsinki?e={event_api_id}" if event_api_id else None
 
             results_list.append({
+                'id': f"luma-{event_api_id}" if event_api_id else None,
+                'start_time': start_at,
                 'title': event_data.get('name'),
                 'description': event_data.get('description'),
                 'location': [coords.get('latitude'), coords.get('longitude')] if coords.get('latitude') and coords.get('longitude') else None,
@@ -222,7 +297,8 @@ async def luma(session, sem):
                 'tags': None,
                 'signup_link': signup_link,
                 'created_by': 'Luma',
-                'created_at': str(date.today())
+                'created_at': str(date.today()),
+                'ttl': _calculate_ttl(date_val, time_val)
             })
     except Exception as e:
         print(f"Luma error: {e}")
@@ -247,7 +323,8 @@ async def collect_events(requested_sources):
             for source_events in results:
                 all_events.extend(source_events)
 
-    return all_events
+    processed_count = await asyncio.to_thread(upsert_events_to_dynamodb, all_events)
+    return processed_count
 
 
 def lambda_handler(event, context):
@@ -255,7 +332,7 @@ def lambda_handler(event, context):
     source_param = query_params.get("source", "all").lower()
     requested_sources = [s.strip() for s in source_param.split(",")]
 
-    all_events = asyncio.run(collect_events(requested_sources))
+    events_processed = asyncio.run(collect_events(requested_sources))
 
     return {
         "statusCode": 200,
@@ -265,5 +342,5 @@ def lambda_handler(event, context):
             "Access-Control-Allow-Methods": "GET, OPTIONS", # Allows the browser to fetch
             "Access-Control-Allow-Headers": "Content-Type, User-Agent" # Allows the headers you are sending
         },
-        "body": json.dumps(all_events)
+        "body": json.dumps({"status": "success", "events_processed": events_processed})
     }
