@@ -1,3 +1,2 @@
-requests==2.32.5
-aiohttp==3.13.3
-boto3==1.37.38
+aiohttp==3.10.11
+requests==2.32.3

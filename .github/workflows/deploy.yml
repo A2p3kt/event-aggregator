@@ -1,4 +1,4 @@
-name: Deploy to AWS Lambda
+name: Deploy Helsinki Aggregator
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.14'
+        python-version: '3.12' # Use 3.12 or 3.13 for best stability on Lambda
 
     - name: Install dependencies
       run: |
@@ -24,13 +24,23 @@ jobs:
         pip install -r requirements.txt -t .
 
     - name: Create deployment package
-      run: zip -r deployment_package.zip .
+      # We exclude venv, git, and the zip itself to keep it clean
+      run: zip -r deployment_package.zip . -x "venv/*" ".git/*" ".github/*" "deployment_package.zip"
 
-    - name: Deploy to Lambda
+    - name: Deploy Producer (Sync Data)
       uses: appleboy/lambda-action@master
       with:
         aws_access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws_region: eu-north-1 
-        function_name: helsinki-event-aggregator
+        function_name: helsinki-event-aggregator # Change this to your Producer name
+        zip_file: deployment_package.zip
+
+    - name: Deploy Consumer (Fetch Data)
+      uses: appleboy/lambda-action@master
+      with:
+        aws_access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws_region: eu-north-1 
+        function_name: HelsinkiEventsConsumer # Change this to your Consumer name
         zip_file: deployment_package.zip
