@@ -14,6 +14,16 @@ def decimal_default(obj):
         return float(obj) if obj % 1 > 0 else int(obj)
     raise TypeError
 
+
+def _json_safe(value):
+    if isinstance(value, Decimal):
+        return decimal_default(value)
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    return value
+
 def lambda_handler(event, context):
     # 1. Fetch all upcoming events (today or later)
     today = str(date.today())
@@ -23,7 +33,7 @@ def lambda_handler(event, context):
     items = response.get('Items', [])
 
     # 2. Sort by date and then by time
-    items.sort(key=lambda x: (x.get('date', ''), x.get('time', '')))
+    items.sort(key=lambda x: (str(x.get('date') or ''), str(x.get('time') or '')))
 
     # 3. Return the response with CORS headers
     return {
@@ -33,5 +43,5 @@ def lambda_handler(event, context):
             "Access-Control-Allow-Origin": "*",  # Allows your website to call this
             "Access-Control-Allow-Methods": "GET, OPTIONS"
         },
-        "body": json.dumps({"events": items}, default=decimal_default)
+        "body": json.dumps({"events": _json_safe(items)}, default=decimal_default)
     }

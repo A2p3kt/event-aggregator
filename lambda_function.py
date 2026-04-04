@@ -59,11 +59,15 @@ def upsert_events_to_dynamodb(events):
     """Upsert events into DynamoDB in 25-item batches."""
     table = boto3.resource("dynamodb").Table(TABLE_NAME)
     processed = 0
+    key_schema = getattr(table, "key_schema", []) or []
+    key_names = [key.get("AttributeName") for key in key_schema if key.get("AttributeName")]
+    has_sort_key = any(key.get("KeyType") == "RANGE" for key in key_schema)
+    batch_writer_kwargs = {"overwrite_by_pkeys": key_names} if has_sort_key and key_names else {}
 
     for batch in _chunk(events, 25):
-        with table.batch_writer(overwrite_by_pkeys=["id", "start_time"]) as writer:
+        with table.batch_writer(**batch_writer_kwargs) as writer:
             for item in batch:
-                if not item.get("id") or not item.get("start_time"):
+                if not item.get("id") or not item.get("date"):
                     continue
                 writer.put_item(Item=_to_dynamodb_types(item))
                 processed += 1
