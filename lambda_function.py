@@ -109,8 +109,8 @@ def myhelsinki():
             results_list.append({
                 'title': result.get('title'),
                 'description': result.get('excerpt'),
-                'location': [loc_coords] if loc_coords else None,
-                'venue': [venue_name] if venue_name else None,
+                'location': loc_coords if loc_coords else None,
+                'venue': venue_name if venue_name else None,
                 'date': result.get('start_date'),
                 'time': result.get('start_time_of_day'),
                 'price': None,
@@ -127,28 +127,36 @@ def myhelsinki():
 def luma():
     results_list = []
     try:
-        url = "https://api.lu.ma/discover/get-paginated-events?discover_place_api_id=discplace-gEii5B2Ju5KKRNH&pagination_limit=50"
+        url = "https://api.lu.ma/discover/get-paginated-events?discover_place_api_id=discplace-gEii5B2Ju5KKRNH&pagination_limit=25"
         response = requests.get(url, headers=HEADERS)
         data = response.json()
 
         for result in data.get('entries') or []:
             event_data = result.get('event') or {}
             ticket_info = result.get('ticket_info') or {}
+            geo_info = event_data.get('geo_address_info') or {}
             coords = event_data.get('coordinate') or {}
             start_at = event_data.get('start_at') or ""
             date_val, time_val = (start_at.split('T') if 'T' in start_at else (start_at, None))
 
+            # Extract venue name from address or full_address
+            venue = geo_info.get('address') or geo_info.get('full_address')
+            
+            # Extract event API ID for signup link
+            event_api_id = event_data.get('api_id')
+            signup_link = f"https://luma.com/helsinki?e={event_api_id}" if event_api_id else None
+
             results_list.append({
                 'title': event_data.get('name'),
-                'description': None,
-                'location': [coords.get('latitude'), coords.get('longitude')],
-                'venue': None,
+                'description': event_data.get('description'),
+                'location': [coords.get('latitude'), coords.get('longitude')] if coords.get('latitude') and coords.get('longitude') else None,
+                'venue': venue,
                 'date': date_val,
                 'time': time_val,
                 'price': 0 if ticket_info.get('is_free') else ticket_info.get('price'),
                 'img_url': event_data.get('cover_url'),
                 'tags': None,
-                'signup_link': f"https://lu.ma/{event_data.get('url')}" if event_data.get('url') else None,
+                'signup_link': signup_link,
                 'created_by': 'Luma',
                 'created_at': str(date.today())
             })
