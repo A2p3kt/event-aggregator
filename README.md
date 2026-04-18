@@ -1,175 +1,255 @@
-# Helsinki Event Aggregator (High-Performance AWS Lambda API)
+# Helsinki Events Lambda Package
 
-This project is a **serverless API Orchestrator** that aggregates, normalizes, and serves event data from major Helsinki sources in real-time. By utilizing a **hybrid multi-threaded and asynchronous architecture**, it processes hundreds of data points from MyHelsinki, Luma, and LinkedEvents in seconds.
+This folder contains two AWS Lambda functions that work together:
 
----
+1. **Producer** (`lambda_function.py`) fetches events from public Helsinki sources and writes them into DynamoDB.
+2. **Consumer** (`consumer_lambda.py`) reads upcoming events from DynamoDB and returns them as API JSON.
 
-## Technical Highlights
-
-- **Hybrid Concurrency:** Combines `ThreadPoolExecutor` for standard REST APIs with `asyncio` and `aiohttp` for complex, nested data fetching.
-- **Performance Optimization:** Reduced execution time for LinkedEvents from 60+ seconds to under 5 seconds by implementing parallel request pooling and URL de-duplication.
-- **Data Normalization:** Maps inconsistent schemas from three different providers into a single, clean JSON format for frontend consumption.
-- **DevOps Pipeline:** Fully automated CI/CD using GitHub Actions, handling environment builds, dependency zipping, and AWS Lambda deployment.
+The current implementation is **async-first** (not thread-pool based) and uses `aiohttp` + `asyncio` for concurrent API calls.
 
 ---
 
-## Tech Stack
+## What This Package Does
 
-- **Runtime:** Python 3.9
-- **Core Libraries:** `aiohttp`, `asyncio`, `requests`, `concurrent.futures`
-- **Infrastructure:** AWS Lambda, IAM, API Gateway
-- **CI/CD:** GitHub Actions
+### Producer Lambda (`lambda_function.py`)
+
+- Triggered automatically by an EventBridge schedule (weekly).
+- Reads `source` from `queryStringParameters`.
+- Supports these source values: `myhelsinki`, `luma`, `linked_events`, `all`.
+- Fetches source APIs concurrently with `asyncio.gather`.
+- Uses one shared semaphore (`MAX_CONCURRENCY = 10`) to limit outbound request pressure.
+- Normalizes event fields into one common schema.
+- Adds a `ttl` field: event date/time + 24 hours.
+- Writes events to DynamoDB table `HelsinkiEvents` in batches of 25.
+- Returns count of processed records.
+
+### Consumer Lambda (`consumer_lambda.py`)
+
+- Scans table `HelsinkiEvents`.
+- Filters records where `date >= today`.
+- Sorts by `date`, then `time`.
+- Converts `Decimal` values into JSON-safe numbers.
+- Returns `{ "events": [...] }` with CORS headers.
 
 ---
 
-## Architecture Overview
-
-The Lambda function acts as a central hub. When a request hits the API Gateway, the function:
-
-1. Identifies the requested sources via query parameters.
-2. Triggers parallel workers to scrape external APIs.
-3. Performs an **Async Burst** for LinkedEvents to fetch deep-linked location and keyword data.
-4. Returns a unified, sorted list of events.
+## Architecture (Current)
 
 ```mermaid
-graph TD
-    A[GET /events?source=all<br/>API Gateway] --> B[AWS Lambda Function]
-    B --> C{Parallel Workers<br/>ThreadPoolExecutor}
+flowchart LR
+  EventBridge[Amazon EventBridge\nWeekly Schedule] --> Producer[Lambda Producer]
 
-    C --> D[MyHelsinki API<br/>requests]
-    C --> E[Luma API<br/>requests]
-    C --> F[LinkedEvents API<br/>aiohttp + asyncio]
+    Producer -->|async fetch| MyHelsinki[MyHelsinki API]
+    Producer -->|async fetch| Luma[Luma API]
+    Producer -->|async fetch + nested lookups| LinkedEvents[LinkedEvents API]
 
-    F --> F2{Async Burst<br/>Nested Data}
-    F2 --> F3[Fetch Locations]
-    F2 --> F4[Fetch Keywords]
-    F3 & F4 --> F5[URL De-duplication]
+    LinkedEvents --> LinkedDetails[Location/Keyword detail fetch]
+    Producer --> Normalize[Normalize + TTL]
+    LinkedDetails --> Normalize
+    Normalize --> DDB[(DynamoDB: HelsinkiEvents)]
 
-    D & E & F5 --> G[Data Normalization & Cleaning]
-    G --> H[Unified JSON Response<br/>Sorted by date]
+    Client -->|GET events endpoint| ConsumerAPI[API Gateway - Consumer]
+    ConsumerAPI --> Consumer[Lambda Consumer]
+    Consumer -->|scan + filter + sort| DDB
+    Consumer --> Client
 
-    style A fill:#4CAF50,stroke:#333,stroke-width:2px,color:#fff
-    style B fill:#FF9800,stroke:#333,stroke-width:2px,color:#fff
-    style C fill:#FFC107,stroke:#333,stroke-width:2px,color:#000
-    style D fill:#2196F3,stroke:#333,stroke-width:2px,color:#fff
-    style E fill:#2196F3,stroke:#333,stroke-width:2px,color:#fff
-    style F fill:#2196F3,stroke:#333,stroke-width:2px,color:#fff
-    style F2 fill:#00BCD4,stroke:#333,stroke-width:2px,color:#fff
-    style F3 fill:#00ACC1,stroke:#333,stroke-width:2px,color:#fff
-    style F4 fill:#00ACC1,stroke:#333,stroke-width:2px,color:#fff
-    style F5 fill:#26C6DA,stroke:#333,stroke-width:2px,color:#fff
-    style G fill:#9C27B0,stroke:#333,stroke-width:2px,color:#fff
-    style H fill:#607D8B,stroke:#333,stroke-width:2px,color:#fff
+    classDef api fill:#dceeff,stroke:#2b5f8a,stroke-width:1.5px,color:#0b2a42
+    classDef lambda fill:#fff1d6,stroke:#9a6b00,stroke-width:1.5px,color:#3f2a00
+    classDef ext fill:#e8f8ec,stroke:#2f7a42,stroke-width:1.5px,color:#123d1f
+    classDef db fill:#fde8ea,stroke:#b03a48,stroke-width:1.5px,color:#4d1118
 
-    linkStyle 0 stroke:#4CAF50,stroke-width:2px
-    linkStyle 1 stroke:#FF9800,stroke-width:2px
-    linkStyle 2 stroke:#FFC107,stroke-width:2px,stroke-dasharray: 5,5
-    linkStyle 3 stroke:#FFC107,stroke-width:2px,stroke-dasharray: 5,5
-    linkStyle 4 stroke:#FFC107,stroke-width:2px,stroke-dasharray: 5,5
-    linkStyle 5 stroke:#00BCD4,stroke-width:2px
-    linkStyle 6 stroke:#00BCD4,stroke-width:2px,stroke-dasharray: 5,5
-    linkStyle 7 stroke:#00BCD4,stroke-width:2px,stroke-dasharray: 5,5
-    linkStyle 8 stroke:#26C6DA,stroke-width:2px
-    linkStyle 9 stroke:#26C6DA,stroke-width:2px
-    linkStyle 10 stroke:#9C27B0,stroke-width:2px
-    linkStyle 11 stroke:#9C27B0,stroke-width:2px
-    linkStyle 12 stroke:#9C27B0,stroke-width:2px
-    linkStyle 13 stroke:#607D8B,stroke-width:2px
+    class ConsumerAPI api
+    class Producer,Consumer lambda
+    class MyHelsinki,Luma,LinkedEvents,LinkedDetails,Normalize ext
+    class DDB db
+    class EventBridge api
 ```
 
 ---
 
-## API Usage
+## Producer Flow (Detailed)
 
-**Endpoint:** `GET /events?source=all`
+```mermaid
+flowchart TD
+  A[Lambda invoked by schedule] --> B[Read source query parameter]
+    B --> C[Build async tasks by source]
+    C --> D[Run tasks with asyncio.gather]
 
-| Parameter | Values | Description |
-|:----------|:-------|:------------|
-| `source`  | `myhelsinki`, `luma`, `linked_events`, `all` | Filter by event source. Defaults to `all`. |
+    D --> E[MyHelsinki fetch pages]
+    D --> F[Luma fetch pages/cursors]
+    D --> G[LinkedEvents fetch pages]
 
-**Response Schema:**
+    G --> H[Collect unique location/keyword URLs]
+    H --> I[Fetch nested docs once]
+
+    E --> J[Normalize event fields]
+    F --> J
+    I --> J
+
+    J --> K[Compute TTL from event date and time]
+    K --> L[Batch upsert to DynamoDB in groups of 25]
+    L --> M[Return success with events processed count]
+```
+
+---
+
+## Event Shape in DynamoDB
+
+All providers are mapped into a common structure (some fields can be `null`):
+
+```json
+{
+  "id": "linked-123 | myhel-123 | luma-123",
+  "start_time": "2026-04-18T18:00:00",
+  "title": "Event title",
+  "description": "Event description",
+  "location": [60.17, 24.94],
+  "venue": "Venue name",
+  "date": "2026-04-18",
+  "time": "18:00:00",
+  "price": 0,
+  "img_url": "... or [ ... ]",
+  "tags": ["music", "family"],
+  "signup_link": "https://...",
+  "created_by": "LinkedEvents | MyHelsinki | Luma",
+  "created_at": "2026-04-18",
+  "ttl": 1776544800
+}
+```
+
+Notes:
+
+- `ttl` is a Unix timestamp used by DynamoDB TTL cleanup.
+- `img_url` type depends on source data and may be string or list.
+
+---
+
+## API Contract (Current Behavior)
+
+### 1) Producer endpoint
+
+Example request:
+
+```http
+GET /?source=all
+```
+
+Accepted `source` values:
+
+- `myhelsinki`
+- `luma`
+- `linked_events`
+- `all` (default)
+- comma-separated values like `myhelsinki,luma`
+
+Example response:
+
+```json
+{
+  "status": "success",
+  "events_processed": 342
+}
+```
+
+### 2) Consumer endpoint
+
+Example request:
+
+```http
+GET /
+```
+
+Example response:
 
 ```json
 {
   "events": [
     {
-      "id": "string",
-      "title": "string",
-      "description": "string",
-      "start_time": "ISO 8601",
-      "end_time": "ISO 8601",
-      "location": "string",
-      "url": "string",
-      "source": "myhelsinki | luma | linkedevents"
+      "id": "linked-123",
+      "date": "2026-04-18",
+      "time": "18:00:00"
     }
   ]
 }
 ```
 
+Both handlers return CORS headers for browser clients.
+
 ---
 
-## Setup & Deployment
-
-### 1. Clone & Initialize
+## Local Setup
 
 ```bash
-git clone https://github.com/A2p3kt/helsinki-event-aggregator.git
-cd helsinki-event-aggregator
 python -m venv venv
-source venv/bin/activate   # On macOS/Linux
-venv\Scripts\activate      # On Windows
+venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Run Locally
+`requirements.txt` currently contains only:
 
-You can test the handler logic directly before deploying to the cloud.
+- `aiohttp==3.10.11`
 
-```python
-# example local test
-from lambda_function import lambda_handler
-result = lambda_handler({"source": "all"}, None)
-print(result)
-```
-
-### 3. CI/CD Secrets
-
-To enable automated deployment, add the following to your **GitHub Repository Secrets**:
-
-> [!IMPORTANT]
->
-> `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION` must all be set before the pipeline can deploy successfully.
+`boto3` is available in AWS Lambda runtime by default.
 
 ---
 
-## CI/CD Pipeline
+## Local Test Examples
 
-The deployment process is fully automated via GitHub Actions. The `.github/workflows/deploy.yml` workflow handles:
+### Producer local invoke
 
-```mermaid
-graph LR
-    A[Push to main] --> B[GitHub Actions Triggered]
-    B --> C[Install Dependencies<br/>from requirements.txt]
-    C --> D[Package into<br/>Deployment ZIP]
-    D --> E[Deploy to AWS Lambda<br/>via GitHub Secrets]
-    E --> F[Live Function Updated]
+```python
+from lambda_function import lambda_handler
 
-    style A fill:#4CAF50,stroke:#333,stroke-width:2px,color:#fff
-    style B fill:#24292e,stroke:#333,stroke-width:2px,color:#fff
-    style C fill:#2196F3,stroke:#333,stroke-width:2px,color:#fff
-    style D fill:#FF9800,stroke:#333,stroke-width:2px,color:#fff
-    style E fill:#FFC107,stroke:#333,stroke-width:2px,color:#000
-    style F fill:#607D8B,stroke:#333,stroke-width:2px,color:#fff
+event = {
+    "queryStringParameters": {
+        "source": "all"
+    }
+}
 
-    linkStyle 0 stroke:#4CAF50,stroke-width:2px
-    linkStyle 1 stroke:#24292e,stroke-width:2px
-    linkStyle 2 stroke:#2196F3,stroke-width:2px
-    linkStyle 3 stroke:#FF9800,stroke-width:2px
-    linkStyle 4 stroke:#FFC107,stroke-width:2px
+print(lambda_handler(event, None))
 ```
 
-| Step | Description |
-| :----- | :------------ |
-| **Dependency Management** | Installs libraries from `requirements.txt` into the build environment |
-| **Packaging** | Creates a deployment ZIP file compatible with the AWS Lambda runtime |
-| **Deployment** | Updates the Lambda function code using credentials stored in GitHub Secrets |
+### Consumer local invoke
+
+```python
+from consumer_lambda import lambda_handler
+
+print(lambda_handler({}, None))
+```
+
+If running locally, ensure your AWS credentials and DynamoDB access are configured.
+
+---
+
+## CI/CD (GitHub Actions)
+
+Deployment workflow: `.github/workflows/deploy.yml`
+
+Current pipeline:
+
+1. Trigger on push to `main`.
+2. Set up Python 3.12.
+3. Install dependencies into project root.
+4. Create `deployment_package.zip` (excluding `venv`, `.git`, `.github`, and the zip itself).
+5. Deploy **Producer** Lambda: `helsinki-event-aggregator`.
+6. Deploy **Consumer** Lambda: `HelsinkiEventsConsumer`.
+
+```mermaid
+flowchart LR
+    A[Push to main] --> B[Checkout repository]
+    B --> C[Setup Python 3.12]
+    C --> D[Install dependencies to root]
+    D --> E[Zip deployment package]
+    E --> F[Deploy Producer Lambda]
+    E --> G[Deploy Consumer Lambda]
+
+    classDef step fill:#eef3ff,stroke:#3a5fb0,stroke-width:1.5px,color:#1d2f5e
+    class A,B,C,D,E,F,G step
+```
+
+Required GitHub secrets:
+
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+
+Region is currently set directly in workflow as `eu-north-1`.
