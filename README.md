@@ -43,9 +43,11 @@ flowchart LR
     Producer -->|async fetch| Luma[Luma API]
     Producer -->|async fetch + nested lookups| LinkedEvents[LinkedEvents API]
 
-    LinkedEvents --> LinkedDetails[Location/Keyword detail fetch]
-    Producer --> Normalize[Normalize + TTL]
-    LinkedDetails --> Normalize
+    
+    Normalize[Normalize + TTL]
+    Luma --> Normalize
+    MyHelsinki --> Normalize
+    LinkedEvents --> Normalize
     Normalize --> DDB[(DynamoDB: HelsinkiEvents)]
 
     Client -->|GET events endpoint| ConsumerAPI[API Gateway - Consumer]
@@ -60,7 +62,7 @@ flowchart LR
 
     class ConsumerAPI api
     class Producer,Consumer lambda
-    class MyHelsinki,Luma,LinkedEvents,LinkedDetails,Normalize ext
+    class MyHelsinki,Luma,LinkedEvents,Normalize ext
     class DDB db
     class EventBridge api
 ```
