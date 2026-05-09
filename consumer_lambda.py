@@ -14,7 +14,6 @@ def decimal_default(obj):
         return float(obj) if obj % 1 > 0 else int(obj)
     raise TypeError
 
-
 def _json_safe(value):
     if isinstance(value, Decimal):
         return decimal_default(value)
@@ -25,12 +24,28 @@ def _json_safe(value):
     return value
 
 def lambda_handler(event, context):
-    # 1. Fetch all upcoming events (today or later)
+    # 1. Fetch all upcoming events with pagination
     today = str(date.today())
-    response = table.scan(
-        FilterExpression=Attr('date').gte(today)
-    )
-    items = response.get('Items', [])
+    filter_exp = Attr('date').gte(today)
+    
+    items = []
+    scan_kwargs = {
+        'FilterExpression': filter_exp
+    }
+    
+    done = False
+    start_key = None
+    
+    while not done:
+        if start_key:
+            scan_kwargs['ExclusiveStartKey'] = start_key
+            
+        response = table.scan(**scan_kwargs)
+        items.extend(response.get('Items', []))
+        
+        # Check if there are more pages to fetch
+        start_key = response.get('LastEvaluatedKey', None)
+        done = start_key is None
 
     # 2. Sort by date and then by time
     items.sort(key=lambda x: (str(x.get('date') or ''), str(x.get('time') or '')))
