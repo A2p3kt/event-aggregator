@@ -165,6 +165,7 @@ async def get_linked_events(session, sem):
             'signup_link': (result.get('info_url') or {}).get('en') or (result.get('info_url') or {}).get('fi'),
             'created_by': 'LinkedEvents',
             'created_at': str(date.today()),
+            'event_status': 'active',
             'ttl': _calculate_ttl(date_val, time_val)
         })
 
@@ -223,6 +224,7 @@ async def myhelsinki(session, sem):
                 'signup_link': result.get('external_url'),
                 'created_by': 'MyHelsinki',
                 'created_at': str(date.today()),
+                'event_status': 'active',
                 'ttl': _calculate_ttl(date_val, time_val)
             })
     except Exception as e:
@@ -302,6 +304,7 @@ async def luma(session, sem):
                 'signup_link': signup_link,
                 'created_by': 'Luma',
                 'created_at': str(date.today()),
+                'event_status': 'active',
                 'ttl': _calculate_ttl(date_val, time_val)
             })
     except Exception as e:
