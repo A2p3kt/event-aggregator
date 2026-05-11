@@ -31,7 +31,7 @@ def lambda_handler(event, context):
     
     # Configure the Query using start_time
     query_kwargs = {
-        'IndexName': 'EventStatusStartTimeIndex',
+        'IndexName': 'EventStatusDateIndex',
         'KeyConditionExpression': Key('event_status').eq('active') & Key('start_time').gte(now)
     }
     
