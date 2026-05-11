@@ -304,7 +304,7 @@ async def luma(session, sem):
                 'signup_link': signup_link,
                 'created_by': 'Luma',
                 'created_at': str(date.today()),
-                'event_status': 'active',
+                
                 'ttl': _calculate_ttl(date_val, time_val)
             })
     except Exception as e:

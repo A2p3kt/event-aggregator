@@ -1,8 +1,8 @@
 import boto3
 import json
 from decimal import Decimal
-from boto3.dynamodb.conditions import Attr
-from datetime import date
+from boto3.dynamodb.conditions import Key
+from datetime import datetime, timezone
 
 # Initialize DynamoDB
 dynamodb = boto3.resource('dynamodb')
@@ -24,38 +24,37 @@ def _json_safe(value):
     return value
 
 def lambda_handler(event, context):
-    # 1. Fetch all upcoming events with pagination
-    today = str(date.today())
-    filter_exp = Attr('date').gte(today)
+    # Generate the current exact UTC time
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     
     items = []
-    scan_kwargs = {
-        'FilterExpression': filter_exp
+    
+    # Configure the Query using start_time
+    query_kwargs = {
+        'IndexName': 'EventStatusStartTimeIndex',
+        'KeyConditionExpression': Key('event_status').eq('active') & Key('start_time').gte(now)
     }
     
     done = False
     start_key = None
     
+    # Fetch all matching events with pagination
     while not done:
         if start_key:
-            scan_kwargs['ExclusiveStartKey'] = start_key
+            query_kwargs['ExclusiveStartKey'] = start_key
             
-        response = table.scan(**scan_kwargs)
+        response = table.query(**query_kwargs)
         items.extend(response.get('Items', []))
         
-        # Check if there are more pages to fetch
         start_key = response.get('LastEvaluatedKey', None)
         done = start_key is None
 
-    # 2. Sort by date and then by time
-    items.sort(key=lambda x: (str(x.get('date') or ''), str(x.get('time') or '')))
 
-    # 3. Return the response with CORS headers
     return {
         "statusCode": 200,
         "headers": {
             "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",  # Allows your website to call this
+            "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, OPTIONS"
         },
         "body": json.dumps({"events": _json_safe(items)}, default=decimal_default)
