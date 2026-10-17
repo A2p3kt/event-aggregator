@@ -25,9 +25,9 @@ The current implementation is **async-first** (not thread-pool based) and uses `
 
 ### Consumer Lambda (`consumer_lambda.py`)
 
-- Scans table `HelsinkiEvents`.
-- Filters records where `date >= today`.
-- Sorts by `date`, then `time`.
+- Queries the `EventStatusDateIndex` index for active records whose `start_time` is now or later.
+- Returns one bounded page of events instead of loading every matching event into one response.
+- Supports cursor-based pagination with a URL-safe `next_token`.
 - Converts `Decimal` values into JSON-safe numbers.
 - Returns `{ "events": [...] }` with CORS headers.
 
@@ -52,7 +52,7 @@ flowchart LR
 
     Client -->|GET events endpoint| ConsumerAPI[API Gateway - Consumer]
     ConsumerAPI --> Consumer[Lambda Consumer]
-    Consumer -->|scan + filter + sort| DDB
+    Consumer -->|paginated query on EventStatusDateIndex| DDB
     Consumer --> Client
 
     classDef api fill:#dceeff,stroke:#2b5f8a,stroke-width:1.5px,color:#0b2a42
@@ -161,6 +161,13 @@ Example request:
 GET /
 ```
 
+The consumer returns up to 50 events by default. Use `limit` to request between
+1 and 100 events, then pass the returned `next_token` to retrieve the next page:
+
+```http
+GET /?limit=50&next_token=<token-from-previous-response>
+```
+
 Example response:
 
 ```json
@@ -171,9 +178,15 @@ Example response:
       "date": "2026-04-18",
       "time": "18:00:00"
     }
-  ]
+  ],
+  "next_token": "<present when more events are available>"
 }
 ```
+
+The token is opaque and must be sent back unchanged. Pagination keeps the
+synchronous Lambda response bounded below AWS Lambda's 6 MiB response limit;
+clients should continue requesting pages rather than expecting the endpoint to
+return all future events in one response.
 
 Both handlers return CORS headers for browser clients.
 

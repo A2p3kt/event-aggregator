@@ -1,5 +1,7 @@
 import boto3
 import json
+import base64
+import binascii
 from decimal import Decimal
 from boto3.dynamodb.conditions import Key
 from datetime import datetime, timezone
@@ -7,6 +9,13 @@ from datetime import datetime, timezone
 # Initialize DynamoDB
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('HelsinkiEvents')
+DEFAULT_PAGE_SIZE = 50
+MAX_PAGE_SIZE = 100
+HEADERS = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS"
+}
 
 def decimal_default(obj):
     """Helper to convert Decimal to int/float for JSON."""
@@ -23,39 +32,55 @@ def _json_safe(value):
         return {key: _json_safe(item) for key, item in value.items()}
     return value
 
+def _response(status_code, body):
+    return {
+        "statusCode": status_code,
+        "headers": HEADERS,
+        "body": json.dumps(body, default=decimal_default)
+    }
+
+def _decode_next_token(token):
+    try:
+        padded_token = token + "=" * (-len(token) % 4)
+        return json.loads(base64.urlsafe_b64decode(padded_token).decode("utf-8"))
+    except (ValueError, TypeError, UnicodeDecodeError, binascii.Error) as exc:
+        raise ValueError("next_token must be a valid continuation token") from exc
+
+def _encode_next_token(last_evaluated_key):
+    token_json = json.dumps(last_evaluated_key, default=decimal_default)
+    return base64.urlsafe_b64encode(token_json.encode("utf-8")).decode("ascii").rstrip("=")
+
 def lambda_handler(event, context):
     # Generate the current exact UTC time
     now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-    
-    items = []
-    
+
+    query_parameters = (event or {}).get("queryStringParameters") or {}
+    try:
+        page_size = int(query_parameters.get("limit", DEFAULT_PAGE_SIZE))
+    except (TypeError, ValueError):
+        return _response(400, {"error": "limit must be an integer"})
+
+    if not 1 <= page_size <= MAX_PAGE_SIZE:
+        return _response(400, {"error": f"limit must be between 1 and {MAX_PAGE_SIZE}"})
+
     # Configure the Query using start_time
     query_kwargs = {
         'IndexName': 'EventStatusDateIndex',
-        'KeyConditionExpression': Key('event_status').eq('active') & Key('start_time').gte(now)
+        'KeyConditionExpression': Key('event_status').eq('active') & Key('start_time').gte(now),
+        'Limit': page_size
     }
-    
-    done = False
-    start_key = None
-    
-    # Fetch all matching events with pagination
-    while not done:
-        if start_key:
-            query_kwargs['ExclusiveStartKey'] = start_key
-            
-        response = table.query(**query_kwargs)
-        items.extend(response.get('Items', []))
-        
-        start_key = response.get('LastEvaluatedKey', None)
-        done = start_key is None
 
+    next_token = query_parameters.get("next_token")
+    if next_token:
+        try:
+            query_kwargs["ExclusiveStartKey"] = _decode_next_token(next_token)
+        except ValueError as exc:
+            return _response(400, {"error": str(exc)})
 
-    return {
-        "statusCode": 200,
-        "headers": {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS"
-        },
-        "body": json.dumps({"events": _json_safe(items)}, default=decimal_default)
-    }
+    response = table.query(**query_kwargs)
+    body = {"events": _json_safe(response.get("Items", []))}
+    last_evaluated_key = response.get("LastEvaluatedKey")
+    if last_evaluated_key:
+        body["next_token"] = _encode_next_token(last_evaluated_key)
+
+    return _response(200, body)
